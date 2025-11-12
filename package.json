@@ -1,0 +1,47 @@
+{
+  "name": "konfam-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx watch src/app.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "lint": "eslint . --ext .ts",
+    "consume:stream": "tsx src/scripts/start-stream-consumer.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.17.1",
+  "dependencies": {
+    "@prisma/client": "6.19.0",
+    "bcrypt": "^6.0.0",
+    "bullmq": "^5.63.0",
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.3",
+    "eventsource": "^4.0.0",
+    "express": "^5.1.0",
+    "groq-sdk": "^0.34.0",
+    "ioredis": "^5.8.2",
+    "natural": "^8.1.0",
+    "node-fetch": "^3.3.2",
+    "pino": "^10.1.0",
+    "sentiment": "^5.0.2",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/eventsource": "^3.0.0",
+    "@types/express": "^5.0.5",
+    "@types/node": "^24.10.0",
+    "@types/sentiment": "^5.0.4",
+    "@types/ws": "^8.18.1",
+    "eslint": "^9.39.1",
+    "pino-pretty": "^13.1.2",
+    "prettier": "^3.6.2",
+    "prisma": "^6.19.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

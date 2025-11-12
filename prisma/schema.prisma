@@ -1,0 +1,350 @@
+// ============================================================================
+// PRISMA SCHEMA — KONFAM BACKEND (DETECTION & BRAND INTELLIGENCE)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// CLIENT & BRAND MANAGEMENT
+// ============================================================================
+
+enum ClientTier {
+  BASIC
+  PRO
+  ENTERPRISE
+}
+
+model Client {
+  id                  String      @id @default(cuid())
+  name                String      @unique
+  industry            String?
+  tier                ClientTier  @default(BASIC)
+
+  // Subscription
+  subscriptionStatus  String      @default("ACTIVE") // ACTIVE, SUSPENDED, CANCELLED
+  monthlyPostLimit    Int         @default(1000)
+
+  // Relationships
+  brands              Brand[]
+  users               User[]
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@index([subscriptionStatus])
+}
+
+model Brand {
+  id                    String    @id @default(cuid())
+  clientId              String
+  client                Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  name                  String    @unique
+  description           String?
+  industry              String?
+
+  // Social Media
+  officialTwitterHandle String?
+  websiteUrl            String?
+
+  // Brand Voice
+  brandTone             String    @default("PROFESSIONAL")
+
+  // Reputation Tracking
+  reputationScore       Float     @default(75.0)
+
+  // Relationships
+  monitors              Monitor[]
+  detectedPosts         DetectedPost[]
+  threats               Threat[]
+
+  scrapeSources         ScrapeSource[]  
+
+  isActive              Boolean   @default(true)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([clientId])
+  @@index([isActive])
+}
+
+// ============================================================================
+// USER MANAGEMENT
+// ============================================================================
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  VIEWER
+}
+
+model User {
+  id                  String    @id @default(cuid())
+  clientId            String
+  client              Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  email               String    @unique
+  passwordHash        String
+  firstName           String
+  lastName            String
+  role                UserRole  @default(VIEWER)
+  emailNotifications  Boolean   @default(true)
+  isActive            Boolean   @default(true)
+
+  lastLoginAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([clientId])
+  @@index([email])
+}
+
+// ============================================================================
+// MONITORING CONFIGURATION
+// ============================================================================
+
+enum Platform {
+  X_CLONE
+  TWITTER
+  FACEBOOK
+  INSTAGRAM
+}
+
+model Monitor {
+  id                    String    @id @default(cuid())
+  brandId               String
+  brand                 Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  name                  String    @unique
+  platform              Platform  @default(X_CLONE)
+
+  keywords              String[]
+  excludeKeywords       String[]
+
+  sentimentThreshold    Float     @default(-0.3)
+  engagementThreshold   Int       @default(50)
+  viralityThreshold     Float     @default(2.0)
+
+  isActive              Boolean   @default(true)
+  checkIntervalSeconds  Int       @default(30)
+
+  // Relationships
+  detectedPosts         DetectedPost[]
+  threats               Threat[]          // ✅ FIXED: back relation to Threat.monitor
+
+  lastCheckedAt         DateTime  @default(now())
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([brandId])
+  @@index([isActive])
+  @@index([platform])
+}
+
+// ============================================================================
+// DETECTED POSTS
+// ============================================================================
+
+model DetectedPost {
+  id                String    @id @default(cuid())
+  monitorId         String
+  monitor           Monitor   @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  brandId           String
+  brand             Brand     @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  externalPostId    String
+  platform          Platform  @default(X_CLONE)
+  sourceUrl         String?
+
+  content           String
+  authorHandle      String
+  authorId          String?
+
+  likeCount         Int       @default(0)
+  retweetCount      Int       @default(0)
+  replyCount        Int       @default(0)
+  viewCount         Int       @default(0)
+
+  viralScore        Float     @default(0.0)
+  engagementRate    Float     @default(0.0)
+
+  sentimentPolarity Float     @default(0.0)
+  emotionalTone     String?
+  matchedKeywords   String[]
+  isFlagged         Boolean   @default(false)
+  flagReason        String?
+
+  postedAt          DateTime
+  capturedAt        DateTime  @default(now())
+
+  threat            Threat?
+
+  @@unique([externalPostId, platform])
+  @@index([monitorId])
+  @@index([brandId])
+  @@index([capturedAt])
+  @@index([sentimentPolarity])
+  @@index([viralScore])
+}
+
+// ============================================================================
+// THREAT DETECTION
+// ============================================================================
+
+enum ThreatSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum ThreatType {
+  MISINFORMATION
+  CRISIS
+  NEGATIVE_SENTIMENT
+  VIRAL_RISK
+}
+
+enum ThreatStatus {
+  NEW
+  ANALYZING
+  PENDING
+  RESPONDED
+  RESOLVED
+  IGNORED
+}
+
+model Threat {
+  id                  String          @id @default(cuid())
+  detectedPostId      String          @unique
+  detectedPost        DetectedPost    @relation(fields: [detectedPostId], references: [id], onDelete: Cascade)
+
+  brandId             String
+  brand               Brand           @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  monitorId           String?
+  monitor             Monitor?        @relation(fields: [monitorId], references: [id], onDelete: SetNull)
+
+  severity            ThreatSeverity
+  threatType          ThreatType
+  status              ThreatStatus    @default(NEW)
+
+  threatScore         Float
+  sentimentImpact     Float
+  viralityImpact      Float
+  credibilityImpact   Float
+
+  analysisReasons     String[]
+  predictedReach      Int             @default(0)
+
+  currentEngagement   Int             @default(0)
+  peakEngagement      Int             @default(0)
+
+  detectedAt          DateTime        @default(now())
+  acknowledgedAt      DateTime?
+  resolvedAt          DateTime?
+  updatedAt           DateTime        @updatedAt
+
+  @@index([brandId])
+  @@index([severity, status])
+  @@index([detectedAt])
+  @@index([threatScore])
+}
+
+// ============================================================================
+// ANALYTICS SNAPSHOT
+// ============================================================================
+
+enum SnapshotScope {
+  GLOBAL
+  BRAND
+}
+
+model DetectionSnapshot {
+  id                    String    @id @default(cuid())
+  brandId               String?
+  scope                 SnapshotScope @default(BRAND)
+
+  totalPostsScanned     Int
+  threatsDetected       Int
+  falsePositiveRate     Float?
+
+  positiveCount         Int       @default(0)
+  neutralCount          Int       @default(0)
+  negativeCount         Int       @default(0)
+  averageSentiment      Float     @default(0.0)
+
+  criticalCount         Int       @default(0)
+  highCount             Int       @default(0)
+  mediumCount           Int       @default(0)
+  lowCount              Int       @default(0)
+
+  timestamp             DateTime  @default(now())
+
+  @@index([brandId])
+  @@index([timestamp])
+}
+
+// ============================================================================
+// SCRAPER DATA STORAGE (Brand-linked sources)
+// ============================================================================
+
+model ScrapeSource {
+  id             String       @id @default(cuid())
+  brandId        String
+  brand          Brand        @relation(fields: [brandId], references: [id], onDelete: Cascade)
+
+  name           String       @unique
+  baseUrl        String       // e.g., "https://zenithbank.com"
+  entryPaths     String[]     // list of paths or sitemaps to crawl
+  type           String       @default("news") // news, blog, press, rss, forum
+  cssSelector    String?      // selector to find article links on listing pages
+  rssUrl         String?      // optional RSS/Atom feed
+  crawlInterval  Int          @default(3600) // crawl frequency (seconds)
+  isActive       Boolean      @default(true)
+  lastCrawledAt  DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  scrapedItems   ScrapedItem[]
+
+  @@index([brandId])
+  @@index([baseUrl])
+}
+
+model ScrapedItem {
+  id             String         @id @default(cuid())
+  sourceId       String
+  source         ScrapeSource   @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  url            String         @unique
+  canonicalUrl   String?
+  title          String?
+  authors        String[]       // simple list of author names
+  publishedAt    DateTime?
+  fetchedAt      DateTime       @default(now())
+  excerpt        String?
+  content        String         // normalized plain text
+  contentHash    String         // SHA256 for deduplication
+  language       String?        // e.g. "en", "ha", "ng-pidgin"
+  rawHtml        String?        // optional (store compressed)
+  tags           String[]       // derived from keywords
+  credibility    Float          @default(0.5) // heuristic 0..1
+  scrapedMeta    Json?          // extra metadata like og:title, canonical, etc.
+
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([sourceId])
+  @@index([publishedAt])
+  @@index([contentHash])
+  @@index([credibility])
+}
