@@ -6,7 +6,9 @@
  *  2. Live X-Clone Stream consumer
  *  3. BullMQ Detection worker
  *  4. BullMQ Brand Intelligence worker (hourly)
- *  5. Graceful shutdown on exit
+ *  5. BullMQ Verification + Response worker (every 5 mins)
+ *  6. WebSocket dashboard notifications
+ *  7. Graceful shutdown
  * ------------------------------------------------------------
  */
 
@@ -14,13 +16,24 @@ import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import dotenv from "dotenv";
-import { logger } from "./config/logger.js";
+import { logger } from "./config/logger";
 import { EventSource } from "eventsource";
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { PrismaClient } from "@prisma/client";
-import { detectAndStorePost } from "./services/detection.service.js";
-import { BrandIntelligenceService } from "./services/brand-intelligence.service.js";
+import crypto from "crypto";
+
+import { detectAndStorePost } from "./services/detection.service";
+import { BrandIntelligenceService } from "./services/brand-intelligence.service";
+import {
+  verificationQueue,
+  scheduleVerificationScanner,
+  startVerificationWorker, // ✅ new explicit starter
+} from "./queues/verification.queue";
+import {
+  bindWsBroadcaster,
+  postResponseToXClone,
+} from "./services/verification-response.service";
 
 dotenv.config();
 
@@ -53,6 +66,20 @@ const connection = new IORedis(process.env.REDIS_URL!, {
 });
 
 const detectionQueue = new Queue("detection-jobs", { connection });
+
+/* ------------------------------------------------------------
+ * 🔊 WebSocket broadcaster for realtime dashboard
+ * ------------------------------------------------------------ */
+function broadcast(event: string, payload: any) {
+  wss.clients.forEach((client: any) => {
+    try {
+      client.send(JSON.stringify({ event, data: payload }));
+    } catch {}
+  });
+}
+
+// Bind for use inside verification-response.service
+bindWsBroadcaster(broadcast);
 
 /* ------------------------------------------------------------
  * X-CLONE STREAM CONSUMER
@@ -102,11 +129,11 @@ function startStreamConsumer() {
 /* ------------------------------------------------------------
  * DETECTION WORKER
  * ------------------------------------------------------------ */
-let worker: Worker | null = null;
+let detectionWorker: Worker | null = null;
 const prisma = new PrismaClient();
 
 function startDetectionWorker() {
-  worker = new Worker(
+  detectionWorker = new Worker(
     "detection-jobs",
     async (job) => {
       const post = job.data;
@@ -141,7 +168,7 @@ function startDetectionWorker() {
         if (!matched) continue;
         anyMatched = true;
 
-        await detectAndStorePost({
+        const threat = await detectAndStorePost({
           monitorId: monitor.id,
           brandId: monitor.brandId,
           externalPostId: post.externalPostId,
@@ -156,17 +183,17 @@ function startDetectionWorker() {
           postedAt: new Date(post.postedAt),
         });
 
-        // Notify WebSocket clients
-        wss.clients.forEach((client) => {
-          client.send(
-            JSON.stringify({
-              event: "post_analyzed",
-              data: {
-                author: post.authorHandle,
-                snippet: post.content.slice(0, 80),
-              },
-            })
-          );
+        if (threat) {
+          await verificationQueue.add("verify-one", {
+            threatId: threat.id,
+            autopost: false,
+          });
+        }
+
+        broadcast("post_analyzed", {
+          author: post.authorHandle,
+          snippet: post.content.slice(0, 80),
+          brand: monitor.brand.name,
         });
       }
 
@@ -179,32 +206,28 @@ function startDetectionWorker() {
     { connection }
   );
 
-  worker.on("completed", (job) =>
+  detectionWorker.on("completed", (job) =>
     logger.info(`🎯 Detection completed for job ${job.id}`)
   );
-  worker.on("failed", (job, err) =>
+  detectionWorker.on("failed", (job, err) =>
     logger.error(`❌ Detection failed for job ${job?.id}: ${err.message}`)
   );
 }
 
 /* ------------------------------------------------------------
- * 🧠 BRAND INTELLIGENCE SCRAPER WORKER (hourly)
+ * 🧠 BRAND INTELLIGENCE SCRAPER WORKER
  * ------------------------------------------------------------ */
 async function startBrandIntelWorker() {
   const brandIntelQueue = new Queue("brand-intelligence", { connection });
 
-  // 🕒 Add repeatable hourly job
   await brandIntelQueue.add(
     "zenith-scrape",
     {},
     {
-      repeat: { pattern: "0 * * * *" }, // ⏰ every hour
+      repeat: { pattern: "0 * * * *" },
       removeOnComplete: true,
     }
   );
-
-  // ⚡ Temporary: run immediately once on startup
-//await brandIntelQueue.add("zenith-scrape-now", {}, { removeOnComplete: true });
 
   new Worker(
     "brand-intelligence",
@@ -218,6 +241,30 @@ async function startBrandIntelWorker() {
   console.log("🧠 Brand Intelligence Scraper Worker scheduled (every hour)");
 }
 
+/* ------------------------------------------------------------
+ * ✅ APPROVAL & VERIFICATION ROUTES
+ * ------------------------------------------------------------ */
+app.post("/api/responses/:id/approve", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await postResponseToXClone(id);
+    res.json({ ok: true, message: "Response posted successfully" });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/threats/:id/verify", async (req, res) => {
+  try {
+    await verificationQueue.add("verify-one", {
+      threatId: req.params.id,
+      autopost: false,
+    });
+    res.json({ ok: true, message: "Verification queued" });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 /* ------------------------------------------------------------
  * GRACEFUL SHUTDOWN
@@ -229,7 +276,7 @@ async function gracefulShutdown(signal: string) {
     wss.close();
     if (es) es.close();
 
-    if (worker) await worker.close();
+    if (detectionWorker) await detectionWorker.close();
     await detectionQueue.close();
     await connection.quit();
     await prisma.$disconnect();
@@ -252,7 +299,11 @@ async function startServer() {
   try {
     startStreamConsumer();
     startDetectionWorker();
-    startBrandIntelWorker(); // ✅ Added here
+    startBrandIntelWorker();
+    await scheduleVerificationScanner();
+    await startVerificationWorker(); // ✅ Explicitly start Verification Worker
+
+   // await new BrandIntelligenceService().runScrapeCycle(); // ⚡ run once immediately
 
     const PORT = process.env.PORT || 4001;
     server.listen(PORT, () =>
@@ -268,14 +319,16 @@ startServer();
 export { app, server };
 
 
+
 // /**
 //  * app.ts — Unified Konfam Backend Bootstrap (BullMQ v5+)
 //  * ------------------------------------------------------------
 //  * Starts:
 //  *  1. Express HTTP + WebSocket server
 //  *  2. Live X-Clone Stream consumer
-//  *  3. BullMQ Detection worker (auto background)
-//  *  4. Graceful shutdown on exit
+//  *  3. BullMQ Detection worker
+//  *  4. BullMQ Brand Intelligence worker (hourly)
+//  *  5. Graceful shutdown on exit
 //  * ------------------------------------------------------------
 //  */
 
@@ -288,13 +341,15 @@ export { app, server };
 // import { Queue, Worker } from "bullmq";
 // import IORedis from "ioredis";
 // import { PrismaClient } from "@prisma/client";
-// import { detectAndStorePost } from "./services/detection.service";
-
+// import { detectAndStorePost } from "./services/detection.service.js";
+// import { BrandIntelligenceService } from "./services/brand-intelligence.service.js";
+// import { verificationWorker, verificationQueue, scheduleVerificationScanner } from "./queues/verification.queue";
+// import { bindWsBroadcaster, postResponseToXClone } from "./services/verification-response.service";
 
 // dotenv.config();
 
 // /* ------------------------------------------------------------
-//  * INITIALIZE EXPRESS + WEBSOCKET SERVER
+//  * EXPRESS + WEBSOCKET SERVER
 //  * ------------------------------------------------------------ */
 // const app = express();
 // app.use(express.json());
@@ -336,45 +391,40 @@ export { app, server };
 //   es = new EventSource(STREAM_URL);
 
 //   es.onopen = () => logger.info("✅ Connected to X-Clone live stream.");
-//   es.onerror = (err: any) => {
+//   es.onerror = (err: any) =>
 //     logger.error(`⚠️ Stream connection error: ${err?.message || err}`);
+
+//   es.onmessage = async (event) => {
+//     try {
+//       const data = JSON.parse(event.data);
+//       const post = data.payload?.post || data.payload;
+//       if (!post || !(post.text || post.content)) return;
+
+//       const content = post.content || post.text;
+//       const author = post.user || post.author?.username || "unknown";
+
+//       logger.info(`🆕 Queued tweet: ${content.slice(0, 80)}...`);
+
+//       await detectionQueue.add("analyze-post", {
+//         externalPostId: post.id || crypto.randomUUID(),
+//         platform: "X_CLONE",
+//         content,
+//         authorHandle: author,
+//         authorId: post.author?.id || null,
+//         likeCount: post.likeCount ?? 0,
+//         retweetCount: post.retweetCount ?? 0,
+//         replyCount: post.replyCount ?? 0,
+//         viewCount: post.viewCount ?? 0,
+//         postedAt: post.createdAt || new Date().toISOString(),
+//       });
+//     } catch {
+//       // heartbeat or malformed JSON
+//     }
 //   };
-
-// es.onmessage = async (event) => {
-//   try {
-//     const data = JSON.parse(event.data);
-
-//     // Handle both payload shapes gracefully
-//     const post = data.payload?.post || data.payload;
-
-//     if (!post || !(post.text || post.content)) return;
-
-//     const content = post.content || post.text;
-//     const author = post.user || post.author?.username || "unknown";
-
-//     logger.info(`🆕 Queued tweet: ${content.slice(0, 80)}...`);
-
-//     await detectionQueue.add("analyze-post", {
-//       externalPostId: post.id || crypto.randomUUID(),
-//       platform: "X_CLONE",
-//       content,
-//       authorHandle: author,
-//       authorId: post.author?.id || null,
-//       likeCount: post.likeCount ?? 0,
-//       retweetCount: post.retweetCount ?? 0,
-//       replyCount: post.replyCount ?? 0,
-//       viewCount: post.viewCount ?? 0,
-//       postedAt: post.createdAt || new Date().toISOString(),
-//     });
-//   } catch (err) {
-//     // likely a heartbeat message
-//   }
-// };
-
 // }
 
 // /* ------------------------------------------------------------
-//  * DETECTION WORKER (BullMQ)
+//  * DETECTION WORKER
 //  * ------------------------------------------------------------ */
 // let worker: Worker | null = null;
 // const prisma = new PrismaClient();
@@ -384,7 +434,9 @@ export { app, server };
 //     "detection-jobs",
 //     async (job) => {
 //       const post = job.data;
-//       console.log(`\n🧠 [Job ${job.id}] Starting detection on: "${post.content.slice(0, 70)}..."`);
+//       console.log(
+//         `\n🧠 [Job ${job.id}] Starting detection on: "${post.content.slice(0, 70)}..."`
+//       );
 
 //       const monitors = await prisma.monitor.findMany({
 //         where: { isActive: true },
@@ -411,11 +463,7 @@ export { app, server };
 //         );
 
 //         if (!matched) continue;
-
 //         anyMatched = true;
-
-//         // Log that detection is starting
-//         console.log(`🔍 Running full detection for monitor "${monitor.name}"...`);
 
 //         await detectAndStorePost({
 //           monitorId: monitor.id,
@@ -432,7 +480,7 @@ export { app, server };
 //           postedAt: new Date(post.postedAt),
 //         });
 
-//         // Notify WebSocket clients (still live)
+//         // Notify WebSocket clients
 //         wss.clients.forEach((client) => {
 //           client.send(
 //             JSON.stringify({
@@ -446,9 +494,8 @@ export { app, server };
 //         });
 //       }
 
-//       if (!anyMatched) {
+//       if (!anyMatched)
 //         console.log("ℹ️ No monitors matched — skipping detailed detection.");
-//       }
 
 //       console.log(`✅ Job ${job.id} fully processed.\n`);
 //       return { status: "done" };
@@ -456,42 +503,59 @@ export { app, server };
 //     { connection }
 //   );
 
-//   worker.on("completed", (job) => {
-//     logger.info(`🎯 Detection completed for job ${job.id}`);
-//   });
+//   worker.on("completed", (job) =>
+//     logger.info(`🎯 Detection completed for job ${job.id}`)
+//   );
+//   worker.on("failed", (job, err) =>
+//     logger.error(`❌ Detection failed for job ${job?.id}: ${err.message}`)
+//   );
+// }
 
-//   worker.on("failed", (job, err) => {
-//     logger.error(`❌ Detection failed for job ${job?.id}: ${err.message}`);
-//   });
+// /* ------------------------------------------------------------
+//  * 🧠 BRAND INTELLIGENCE SCRAPER WORKER (hourly)
+//  * ------------------------------------------------------------ */
+// async function startBrandIntelWorker() {
+//   const brandIntelQueue = new Queue("brand-intelligence", { connection });
+
+//   // 🕒 Add repeatable hourly job
+//   await brandIntelQueue.add(
+//     "zenith-scrape",
+//     {},
+//     {
+//       repeat: { pattern: "0 * * * *" }, // ⏰ every hour
+//       removeOnComplete: true,
+//     }
+//   );
+
+//   // ⚡ Temporary: run immediately once on startup
+// //await brandIntelQueue.add("zenith-scrape-now", {}, { removeOnComplete: true });
+
+//   new Worker(
+//     "brand-intelligence",
+//     async () => {
+//       const scraper = new BrandIntelligenceService();
+//       await scraper.runScrapeCycle();
+//     },
+//     { connection }
+//   );
+
+//   console.log("🧠 Brand Intelligence Scraper Worker scheduled (every hour)");
 // }
 
 
 // /* ------------------------------------------------------------
-//  * GRACEFUL SHUTDOWN HANDLER
+//  * GRACEFUL SHUTDOWN
 //  * ------------------------------------------------------------ */
 // async function gracefulShutdown(signal: string) {
 //   logger.warn(`🧹 ${signal} received. Shutting down gracefully...`);
-
 //   try {
-//     // Close WebSocket
-//     wss.clients.forEach((client) => client.close());
+//     wss.clients.forEach((c) => c.close());
 //     wss.close();
+//     if (es) es.close();
 
-//     // Close EventSource
-//     if (es) {
-//       es.close();
-//       logger.info("🛑 Stream consumer closed.");
-//     }
-
-//     // Stop worker and disconnect queue
-//     if (worker) {
-//       await worker.close();
-//       logger.info("🛑 Worker closed.");
-//     }
-
+//     if (worker) await worker.close();
 //     await detectionQueue.close();
 //     await connection.quit();
-
 //     await prisma.$disconnect();
 
 //     server.close(() => {
@@ -503,10 +567,7 @@ export { app, server };
 //     process.exit(1);
 //   }
 // }
-
-// ["SIGINT", "SIGTERM"].forEach((signal) => {
-//   process.on(signal, () => gracefulShutdown(signal));
-// });
+// ["SIGINT", "SIGTERM"].forEach((s) => process.on(s, () => gracefulShutdown(s)));
 
 // /* ------------------------------------------------------------
 //  * APP STARTUP SEQUENCE
@@ -515,11 +576,12 @@ export { app, server };
 //   try {
 //     startStreamConsumer();
 //     startDetectionWorker();
+//     startBrandIntelWorker(); // ✅ Added here
 
 //     const PORT = process.env.PORT || 4001;
-//     server.listen(PORT, () => {
-//       logger.info(`🚀 Konfam backend running on http://localhost:${PORT}`);
-//     });
+//     server.listen(PORT, () =>
+//       logger.info(`🚀 Konfam backend running on http://localhost:${PORT}`)
+//     );
 //   } catch (err: any) {
 //     logger.error(`❌ Server startup error: ${err.message}`);
 //     process.exit(1);
@@ -527,5 +589,4 @@ export { app, server };
 // }
 
 // startServer();
-
 // export { app, server };
