@@ -20,10 +20,17 @@ export async function analyzeIncomingPost(req: Request, res: Response) {
       postedAt: new Date(data.postedAt || Date.now()),
     });
 
+    if (!result) {
+      console.error("❌ Detection service returned null result");
+      return res.status(500).json({ success: false, error: "Detection service returned no result" });
+    }
+
+    const flaggedResult = result as typeof result & { isFlagged?: boolean };
+
     return res.status(200).json({
       success: true,
       detectedPostId: result.id,
-      message: result.isFlagged
+      message: flaggedResult.isFlagged
         ? "⚠️ Post flagged for potential threat."
         : "✅ Post analyzed — no threat detected.",
     });

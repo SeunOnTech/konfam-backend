@@ -34,6 +34,7 @@ import {
   bindWsBroadcaster,
   postResponseToXClone,
 } from "./services/verification-response.service";
+import { dashboardRouter } from "./controller/dashboard.controller"
 
 dotenv.config();
 
@@ -46,6 +47,9 @@ app.use(express.json());
 app.get("/", (_, res) => {
   res.json({ status: "Konfam backend running ✅" });
 });
+
+//  Dashboard Routes
+app.use("/api/dashboard", dashboardRouter)
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
@@ -85,7 +89,7 @@ bindWsBroadcaster(broadcast);
  * X-CLONE STREAM CONSUMER
  * ------------------------------------------------------------ */
 const STREAM_URL =
-  process.env.XCLONE_STREAM_URL || "http://localhost:4000/api/stream/live";
+  process.env.XCLONE_STREAM_URL!;
 logger.info(`🔗 Connecting to X-Clone Stream: ${STREAM_URL}`);
 
 let es: EventSource | null = null;

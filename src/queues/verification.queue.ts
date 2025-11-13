@@ -24,9 +24,9 @@ export async function scheduleVerificationScanner() {
   await verificationQueue.add(
     "scan-unverified",
     {},
-    { repeat: { every: 5 * 60 * 1000 }, removeOnComplete: true }
+    { repeat: { every: 0.16 * 60 * 1000 }, removeOnComplete: true }
   );
-  console.log("🕒 Verification scanner scheduled (every 5 mins)");
+  console.log("🕒 Verification scanner scheduled (every 10 secs)");
 }
 
 /**
