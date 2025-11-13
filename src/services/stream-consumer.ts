@@ -1,6 +1,6 @@
 // konfam-backend/src/services/stream-consumer.ts
 
-const X_CLONE_URL = process.env.X_CLONE_URL || "http://localhost:4000";
+const X_CLONE_URL = process.env.XCLONE_API_URL || "http://localhost:4000";
 
 export class XCloneStreamConsumer {
   private isConnected = false;

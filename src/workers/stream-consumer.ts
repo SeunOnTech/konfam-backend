@@ -27,6 +27,9 @@ es.onmessage = async (event) => {
 
     if (!post || !post.content) return;
 
+    console.log('the data streamed', data)
+    console.log('the post streamed', post)
+
     console.log(`🆕 New tweet queued: ${post.content.slice(0, 60)}...`);
 
     await detectionQueue.add("analyze-post", {

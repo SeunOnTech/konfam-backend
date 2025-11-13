@@ -21,6 +21,7 @@ import { EventSource } from "eventsource";
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { PrismaClient } from "@prisma/client";
+import cors from "cors"; 
 import crypto from "crypto";
 
 import { detectAndStorePost } from "./services/detection.service";
@@ -42,6 +43,15 @@ dotenv.config();
  * EXPRESS + WEBSOCKET SERVER
  * ------------------------------------------------------------ */
 const app = express();
+
+// Allow all CORS (no restriction)
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json());
 
 app.get("/", (_, res) => {
@@ -105,7 +115,10 @@ function startStreamConsumer() {
     try {
       const data = JSON.parse(event.data);
       const post = data.payload?.post || data.payload;
-      if (!post || !(post.text || post.content)) return;
+      if (!post || !(post.text || post.content || post.postId)) return;
+
+      console.log('the data streamed', data)
+      console.log('the post streamed', post)
 
       const content = post.content || post.text;
       const author = post.user || post.author?.username || "unknown";
@@ -113,7 +126,7 @@ function startStreamConsumer() {
       logger.info(`🆕 Queued tweet: ${content.slice(0, 80)}...`);
 
       await detectionQueue.add("analyze-post", {
-        externalPostId: post.id || crypto.randomUUID(),
+        externalPostId: post.postId,
         platform: "X_CLONE",
         content,
         authorHandle: author,
@@ -304,7 +317,7 @@ async function startServer() {
     startStreamConsumer();
     startDetectionWorker();
     startBrandIntelWorker();
-    await scheduleVerificationScanner();
+    //await scheduleVerificationScanner();
     await startVerificationWorker(); // ✅ Explicitly start Verification Worker
 
    // await new BrandIntelligenceService().runScrapeCycle(); // ⚡ run once immediately

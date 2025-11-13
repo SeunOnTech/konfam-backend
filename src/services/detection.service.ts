@@ -255,10 +255,22 @@ Text: """${content}"""
       });
 
       // enqueue verification (step 3)
-      await verificationQueue.add("verify-one", {
-        threatId: createdThreat.id,
-        autopost: false,
-      });
+      // enqueue verification (event-driven, deduped by threatId)
+      await verificationQueue.add(
+        "verify-one",
+        {
+          threatId: createdThreat.id,
+          autopost: true,
+        },
+        {
+          jobId: createdThreat.id, // prevents duplicate verify jobs
+        }
+      );
+
+      // await verificationQueue.add("verify-one", {
+      //   threatId: createdThreat.id,
+      //   autopost: false,
+      // });
 
       console.log(
         `🚨 Threat Created: [${severity}] ${threatType} (Score: ${threatScore.toFixed(

@@ -7,8 +7,7 @@
     "dev": "tsx watch src/app.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "lint": "eslint . --ext .ts",
-    "consume:stream": "tsx src/scripts/start-stream-consumer.ts"
+    "lint": "eslint . --ext .ts"
   },
   "keywords": [],
   "author": "",
@@ -19,6 +18,7 @@
     "bcrypt": "^6.0.0",
     "bullmq": "^5.63.0",
     "cheerio": "^1.1.2",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "eventsource": "^4.0.0",
     "express": "^5.1.0",
@@ -32,6 +32,7 @@
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
+    "@types/cors": "^2.8.19",
     "@types/eventsource": "^3.0.0",
     "@types/express": "^5.0.5",
     "@types/node": "^24.10.0",

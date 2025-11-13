@@ -26,7 +26,8 @@ const sentiment = new Sentiment();
 export class BrandIntelligenceService {
   private CONFIG = {
     SERPAPI_KEY: process.env.SERPAPI_API_KEY || "",
-    BRAND_ID: "cmhv9nskc0002uu3cl92dyovn",
+    // BRAND_ID: "cmhv9nskc0002uu3cl92dyovn",
+    BRAND_ID: "cmhxydh4d0002uucw5tkhni6o",
     BRAND_NAME: "Zenith Bank Nigeria",
     MAX_RESULTS_PER_SOURCE: 8,
     FETCH_FULL_CONTENT: true,

@@ -1,5 +1,5 @@
-import { Worker } from "../config/queue.js";
-import { detectAndStorePost } from "../services/detection.service.js";
+import { Worker } from "../config/queue";
+import { detectAndStorePost } from "../services/detection.service";
 import { PrismaClient } from "@prisma/client";
 import { logger } from "../config/logger.js";
 

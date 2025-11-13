@@ -1,7 +1,10 @@
 // src/queues/verification.queue.ts
 import { Queue, Worker } from "bullmq";
 import IORedis from "ioredis";
-import { handleThreatVerifyRespond, getWsBroadcaster } from "../services/verification-response.service";
+import {
+  handleThreatVerifyRespond,
+  getWsBroadcaster,
+} from "../services/verification-response.service";
 
 export const connection = new IORedis(process.env.REDIS_URL!, {
   maxRetriesPerRequest: null,
@@ -18,42 +21,22 @@ export const verificationQueue = new Queue("verification-jobs", {
 });
 
 /**
- * 🕒 Periodic catch-up scanner
+ * 🕒 (Deprecated) Periodic catch-up scanner
+ * Kept only so existing imports don't break. Does nothing now.
  */
 export async function scheduleVerificationScanner() {
-  await verificationQueue.add(
-    "scan-unverified",
-    {},
-    { repeat: { every: 0.16 * 60 * 1000 }, removeOnComplete: true }
+  console.log(
+    "⏹️ scheduleVerificationScanner disabled — verification is now event-driven per threat."
   );
-  console.log("🕒 Verification scanner scheduled (every 10 secs)");
 }
 
 /**
- * 🧠 Core Verification Worker
+ * 🧠 Core Verification Worker (event-driven only)
  */
 export const verificationWorker = new Worker(
   "verification-jobs",
   async (job) => {
     const broadcast = getWsBroadcaster();
-
-    if (job.name === "scan-unverified") {
-      const { PrismaClient } = await import("@prisma/client");
-      const prisma = new PrismaClient();
-      const pending = await prisma.threat.findMany({
-        where: { verificationStatus: null },
-        select: { id: true },
-        take: 25,
-      });
-
-      console.log(`📋 Found ${pending.length} unverified threats to queue...`);
-      for (const t of pending) {
-        await verificationQueue.add("verify-one", { threatId: t.id, autopost: false });
-      }
-
-      await prisma.$disconnect();
-      return { queued: pending.length };
-    }
 
     if (job.name === "verify-one") {
       const { threatId, autopost } = job.data;
@@ -63,21 +46,27 @@ export const verificationWorker = new Worker(
         const result = await handleThreatVerifyRespond(threatId, !!autopost);
 
         if (result?.verified === true) {
-          console.log(`✅ Threat ${threatId} verified as TRUE (no misinformation detected).`);
+          console.log(
+            `✅ Threat ${threatId} verified as TRUE (no misinformation detected).`
+          );
           broadcast?.("verification_complete", {
             threatId,
             status: "VERIFIED_TRUE",
             message: "✅ Verified as true information",
           });
         } else if (result?.verified === false) {
-          console.log(`⚠️ Threat ${threatId} flagged as MISINFORMATION — response created.`);
+          console.log(
+            `⚠️ Threat ${threatId} flagged as MISINFORMATION — response created.`
+          );
           broadcast?.("verification_complete", {
             threatId,
             status: "MISINFORMATION",
             message: "⚠️ Misinformation detected — AI response generated",
           });
         } else {
-          console.log(`ℹ️ Threat ${threatId} verification returned unknown result.`);
+          console.log(
+            `ℹ️ Threat ${threatId} verification returned unknown result.`
+          );
           broadcast?.("verification_complete", {
             threatId,
             status: "UNKNOWN",
@@ -87,7 +76,9 @@ export const verificationWorker = new Worker(
 
         return { ok: true, result };
       } catch (err: any) {
-        console.error(`❌ Verification failed for ${threatId}: ${err.message}`);
+        console.error(
+          `❌ Verification failed for ${threatId}: ${err.message}`
+        );
         broadcast?.("verification_failed", {
           threatId,
           status: "ERROR",
@@ -97,32 +88,28 @@ export const verificationWorker = new Worker(
       }
     }
 
+    // Unknown job types safely ignored
+    console.log(`ℹ️ Unknown job type received: ${job.name}`);
     return { ok: true };
   },
-  { connection }
+  {
+    connection,
+    // ⚡ verify multiple threats in parallel
+    concurrency: 10,
+  }
 );
 
 /**
  * 🐂 Explicit starter for logs in app.ts
  */
 export async function startVerificationWorker() {
-  console.log("🐂 BullMQ Verification worker listening...");
+  console.log("🐂 BullMQ Verification worker listening (concurrency=10)...");
 }
 
 // // src/queues/verification.queue.ts
-// /**
-//  * verification.queue.ts — Verification + AI Response Orchestrator
-//  * ------------------------------------------------------------
-//  * - Periodically scans unresolved threats
-//  * - Verifies claims using trusted sources
-//  * - Generates AI responses if misinformation detected
-//  * - Optionally autoposts to X-Clone
-//  * ------------------------------------------------------------
-//  */
-
 // import { Queue, Worker } from "bullmq";
 // import IORedis from "ioredis";
-// import { handleThreatVerifyRespond } from "../services/verification-response.service";
+// import { handleThreatVerifyRespond, getWsBroadcaster } from "../services/verification-response.service";
 
 // export const connection = new IORedis(process.env.REDIS_URL!, {
 //   maxRetriesPerRequest: null,
@@ -140,15 +127,14 @@ export async function startVerificationWorker() {
 
 // /**
 //  * 🕒 Periodic catch-up scanner
-//  * Runs every 5 minutes to queue unverified threats
 //  */
 // export async function scheduleVerificationScanner() {
 //   await verificationQueue.add(
 //     "scan-unverified",
 //     {},
-//     { repeat: { every: 5 * 60 * 1000 }, removeOnComplete: true } // every 5 minutes
+//     { repeat: { every: 0.16 * 60 * 1000 }, removeOnComplete: true }
 //   );
-//   console.log("🕒 Verification scanner scheduled (every 5 mins)");
+//   console.log("🕒 Verification scanner scheduled (every 10 secs)");
 // }
 
 // /**
@@ -157,18 +143,34 @@ export async function startVerificationWorker() {
 // export const verificationWorker = new Worker(
 //   "verification-jobs",
 //   async (job) => {
+//     const broadcast = getWsBroadcaster();
+
 //     if (job.name === "scan-unverified") {
 //       const { PrismaClient } = await import("@prisma/client");
 //       const prisma = new PrismaClient();
+
 //       const pending = await prisma.threat.findMany({
 //         where: { verificationStatus: null },
-//         select: { id: true },
+//         select: { id: true, brandId: true },
 //         take: 25,
 //       });
 
 //       console.log(`📋 Found ${pending.length} unverified threats to queue...`);
+
 //       for (const t of pending) {
-//         await verificationQueue.add("verify-one", { threatId: t.id, autopost: false });
+//         // 🔍 Fetch the brand from DB
+//         const brand = await prisma.brand.findUnique({
+//           //where: { id: t.brandId },
+//           where: { id: 'cmhv9nskc0002uu3cl92dyovn' },
+//           select: { verificationMode: true },
+//         });
+
+//         const autopost = brand?.verificationMode === "AUTOPILOT";
+
+//         await verificationQueue.add("verify-one", {
+//           threatId: t.id,
+//           autopost,
+//         });
 //       }
 
 //       await prisma.$disconnect();
@@ -178,17 +180,52 @@ export async function startVerificationWorker() {
 //     if (job.name === "verify-one") {
 //       const { threatId, autopost } = job.data;
 //       console.log(`🔍 Running verification for threat: ${threatId}`);
-//       return await handleThreatVerifyRespond(threatId, !!autopost);
+
+//       try {
+//         const result = await handleThreatVerifyRespond(threatId, !!autopost);
+
+//         if (result?.verified === true) {
+//           console.log(`✅ Threat ${threatId} verified as TRUE (no misinformation detected).`);
+//           broadcast?.("verification_complete", {
+//             threatId,
+//             status: "VERIFIED_TRUE",
+//             message: "✅ Verified as true information",
+//           });
+//         } else if (result?.verified === false) {
+//           console.log(`⚠️ Threat ${threatId} flagged as MISINFORMATION — response created.`);
+//           broadcast?.("verification_complete", {
+//             threatId,
+//             status: "MISINFORMATION",
+//             message: "⚠️ Misinformation detected — AI response generated",
+//           });
+//         } else {
+//           console.log(`ℹ️ Threat ${threatId} verification returned unknown result.`);
+//           broadcast?.("verification_complete", {
+//             threatId,
+//             status: "UNKNOWN",
+//             message: "ℹ️ Verification completed with no clear result",
+//           });
+//         }
+
+//         return { ok: true, result };
+//       } catch (err: any) {
+//         console.error(`❌ Verification failed for ${threatId}: ${err.message}`);
+//         broadcast?.("verification_failed", {
+//           threatId,
+//           status: "ERROR",
+//           message: `❌ Verification failed: ${err.message}`,
+//         });
+//         return { error: err.message };
+//       }
 //     }
 
 //     return { ok: true };
 //   },
-//   { connection }
+//   { connection },
 // );
 
 // /**
-//  * 🐂 Explicit starter to announce worker readiness
-//  * (for app.ts logs)
+//  * 🐂 Explicit starter for logs in app.ts
 //  */
 // export async function startVerificationWorker() {
 //   console.log("🐂 BullMQ Verification worker listening...");

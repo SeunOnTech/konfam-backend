@@ -57,6 +57,8 @@ model Brand {
   // Brand Voice
   brandTone             String    @default("PROFESSIONAL")
 
+  verificationMode      VerificationMode @default(AUTOPILOT)
+
   // Reputation Tracking
   reputationScore       Float     @default(75.0)
 
@@ -83,6 +85,11 @@ enum UserRole {
   ADMIN
   MANAGER
   VIEWER
+}
+
+enum VerificationMode {
+  AUTOPILOT
+  SUPERVISED
 }
 
 model User {
