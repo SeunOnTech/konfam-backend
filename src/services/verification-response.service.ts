@@ -135,13 +135,16 @@ export async function generateResponseForFalse(threatId: string) {
 
   const sourcesUsed = evidence.map((s) => s.url);
 
-  // 🔹 Build "Verified Sources" section (HTML)
-  const verifiedSourcesHTML =
-    sourcesUsed.length > 0
-      ? `<ul>${sourcesUsed
-          .map((src) => `<li><a href="${src}" target="_blank">${src}</a></li>`)
-          .join("")}</ul>`
-      : "<p>No verified press sources available yet.</p>";
+// 🔹 Build "Verified Sources" section (HTML)
+const verifiedSourcesHTML =
+  sourcesUsed.length > 0
+    ? `<ul>${sourcesUsed
+        .map((src) => `<li><a href="${src}" target="_blank">${src}</a></li>`)
+        .join("")}</ul>`
+    : `<ul>
+        <li><a href="https://www.zenithbank.com" target="_blank">https://www.zenithbank.com</a></li>
+        <li><a href="https://www.zenithbank.com/media" target="_blank">https://www.zenithbank.com/media</a></li>
+      </ul>`;
 
   // 🔹 LLM prompt WITHOUT sources
   const completion = await groq.chat.completions.create({
