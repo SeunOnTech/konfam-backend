@@ -2,11 +2,11 @@
   "name": "konfam-backend",
   "version": "1.0.0",
   "description": "",
-  "main": "dist/app.js",
+  "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/app.ts",
     "build": "tsc",
-    "start": "node dist/app.js",
+    "start": "node dist/index.js",
     "lint": "eslint . --ext .ts"
   },
   "keywords": [],
